@@ -16,7 +16,7 @@ Open http://127.0.0.1:8000 in Chrome or Edge and allow the camera. Internet is n
 ## Use
 
 1. **Teach a sign:** type a word, press Record, hold the sign and tilt your hand slightly. Do 2–3 rounds per sign, for at least 2 signs.
-2. **Train model:** three models compete (neural network, random forest, k-nearest neighbours) and the best one is kept.
+2. **Train model:** five models compete (neural network, random forest, k-nearest neighbours, SVM, and a voting ensemble of the best) and the best one is kept.
 3. **Sign:** hold a sign for about a second and the word is added to your sentence. Press Speak to hear it.
 4. **Voice to signs:** press Listen (or type) and each known word is shown as a hand drawing.
 
@@ -30,7 +30,7 @@ python import_dataset.py path\to\landmarks.csv
 python server.py
 ```
 
-It keeps up to 300 samples per sign, stores a mirrored copy of each so either hand works, then trains the three models. Run it once per dataset. Your own recorded signs are added to the same database, so you can mix both.
+It keeps up to 300 samples per sign, stores a mirrored copy of each so either hand works, then trains all candidate models. Run it once per dataset. Your own recorded signs are added to the same database, so you can mix both.
 
 ## Files
 

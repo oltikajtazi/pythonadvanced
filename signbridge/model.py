@@ -4,7 +4,8 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.svm import SVC
 from sklearn.model_selection import cross_val_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
@@ -16,14 +17,21 @@ import database as db
 MIN_PER_LABEL = 8
 
 # Every candidate is trained and cross-validated; the best one is saved.
-CANDIDATES = {
+CANDIDATES_BASE = {
     "mlp": lambda: make_pipeline(
         StandardScaler(), MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=800, random_state=1)
     ),
     "random_forest": lambda: RandomForestClassifier(n_estimators=200, random_state=1),
     "knn": lambda: make_pipeline(StandardScaler(), KNeighborsClassifier(n_neighbors=5)),
+    "svm": lambda: make_pipeline(StandardScaler(), SVC(C=10, probability=True, random_state=1)),
+    # Soft-vote of the strongest models: usually the most stable on small datasets.
+    "ensemble": lambda: VotingClassifier(
+        [("mlp", CANDIDATES_BASE["mlp"]()), ("svm", CANDIDATES_BASE["svm"]()), ("rf", CANDIDATES_BASE["random_forest"]())],
+        voting="soft",
+    ),
 }
 
+CANDIDATES = {k: v for k, v in CANDIDATES_BASE.items()}
 _clf = None
 
 

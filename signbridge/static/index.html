@@ -1,80 +1,78 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Signbridge</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;600;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signbridge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header>
-    <h1>Signbridge</h1>
-    <span id="pill" class="pill">connecting</span>
-    <label class="lang">Language
-      <select id="lang">
-        <option value="en-US">English</option>
-        <option value="de-DE">Deutsch</option>
-        <option value="sq-AL">Shqip</option>
-        <option value="es-ES">Español</option>
-        <option value="fr-FR">Français</option>
-        <option value="tr-TR">Türkçe</option>
-      </select>
-    </label>
-  </header>
+<header class="top">
+  <h1>Signbridge</h1>
+  <p id="modelState" class="pill">No model yet</p>
+</header>
 
-  <main>
-    <section class="stage" id="stage">
-      <video id="cam" playsinline muted></video>
+<main>
+  <section class="stage" aria-label="Camera">
+    <div class="frame">
+      <video id="video" autoplay playsinline muted></video>
       <canvas id="overlay"></canvas>
-      <div class="now" aria-live="polite">
-        <div id="nowWord" class="idle">Show a sign</div>
-        <div class="bar"><i id="hold"></i></div>
+      <p id="camMsg" class="cam-msg">Starting camera…</p>
+    </div>
+    <div class="reading">
+      <div class="big" id="liveLabel">–</div>
+      <div class="meter" aria-hidden="true"><i id="meterFill"></i></div>
+      <p id="liveHint">Hold a sign still to add it to your sentence.</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="sign">Sign to text</button>
+      <button role="tab" aria-selected="false" data-tab="voice">Voice to signs</button>
+      <button role="tab" aria-selected="false" data-tab="teach">Signs & training</button>
+    </div>
+
+    <div class="view" id="view-sign">
+      <div id="sentence" class="sentence" aria-live="polite"><span class="empty">Your sentence will appear here.</span></div>
+      <div class="row">
+        <button id="speakBtn" class="primary">Speak sentence</button>
+        <button id="undoBtn">Remove last word</button>
+        <button id="clearBtn">Clear</button>
       </div>
-    </section>
+      <h2>Recent</h2>
+      <ul id="history" class="history"></ul>
+    </div>
 
-    <aside>
-      <section class="panel">
-        <h2>Your sentence</h2>
-        <div id="sentence" class="words"></div>
-        <div class="row">
-          <button id="speak" class="primary">Speak</button>
-          <button id="undo">Remove last word</button>
-          <button id="clear">Clear</button>
-        </div>
-        <ul id="history" class="history"></ul>
-      </section>
+    <div class="view" id="view-voice" hidden>
+      <div class="row">
+        <button id="listenBtn" class="primary">Start listening</button>
+        <select id="lang" aria-label="Spoken language">
+          <option value="en-US">English</option><option value="sq-AL">Shqip</option>
+          <option value="es-ES">Español</option><option value="de-DE">Deutsch</option>
+          <option value="fr-FR">Français</option><option value="tr-TR">Türkçe</option>
+        </select>
+      </div>
+      <div id="heard" class="heard" aria-live="polite">Say something and it will be shown in signs.</div>
+      <form id="typeForm" class="row"><input id="typeIn" placeholder="Or type a phrase" autocomplete="off"><button>Show signs</button></form>
+      <div id="tiles" class="tiles"></div>
+    </div>
 
-      <section class="panel">
-        <h2>Teach a sign</h2>
-        <div class="row">
-          <input id="label" placeholder="Word for this sign" maxlength="40">
-          <button id="record" class="primary">Record</button>
-        </div>
-        <p id="recStatus" class="hint">Hold the sign and tilt your hand a little while it records. Do 2–3 rounds per sign.</p>
-        <div id="labels" class="chips"></div>
-        <div class="row">
-          <button id="train" disabled>Train model</button>
-        </div>
-        <p id="modelInfo" class="hint">No model trained yet.</p>
-        <p id="scores" class="hint"></p>
-      </section>
-
-      <section class="panel">
-        <h2>Voice to signs</h2>
-        <div class="row">
-          <button id="mic" class="primary">Listen</button>
-          <input id="text" placeholder="or type a sentence">
-          <button id="show">Show signs</button>
-        </div>
-        <div id="signs" class="signs"></div>
-      </section>
-    </aside>
-  </main>
-
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
-  <script src="/static/app.js"></script>
+    <div class="view" id="view-teach" hidden>
+      <form id="recForm" class="row">
+        <input id="recLabel" placeholder="Word or letter to teach" maxlength="40" required>
+        <button id="recBtn" class="primary">Record 2 seconds</button>
+      </form>
+      <ul id="labels" class="labels"></ul>
+      <div class="row"><button id="trainBtn" class="primary">Train model</button><span id="trainMsg" class="note"></span></div>
+      <div id="scores" class="scores"></div>
+    </div>
+  </section>
+</main>
+<p id="toast" class="toast" role="status" hidden></p>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

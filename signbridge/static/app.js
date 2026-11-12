@@ -1,255 +1,210 @@
-// Signbridge frontend: MediaPipe finds the hand in the browser, Python recognises the sign.
-const HOLD_MS = 700;   // how long a sign must be held to become a word
-const MIN_CONF = 0.8;  // minimum model confidence
-const SHOTS = 40;      // samples captured per recording
-const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
-               [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
 
-const $ = s => document.querySelector(s);
-const el = (tag, cls, text) => {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text) e.textContent = text;
-  return e;
-};
+const $ = (id) => document.getElementById(id);
+const CONNECT = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+const api = (url, opt) => fetch(url, opt).then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText); return r.json(); });
+const post = (url, body) => api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+function toast(t) { const e = $("toast"); e.textContent = t; e.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (e.hidden = true), 3200); }
 
-const video = $('#cam'), overlay = $('#overlay'), octx = overlay.getContext('2d');
-const nowWord = $('#nowWord'), holdBar = $('#hold'), lang = $('#lang');
+/* ---------- tabs ---------- */
+document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-selected", x === b));
+  document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + b.dataset.tab));
+}));
 
-let ws, inflight = false, frame = null;           // frame = {landmarks, hand} while a hand is visible
-let stable = null, since = 0, committed = null;   // hold-to-commit state
-let sentence = [], rec = null, lastShot = 0;
-
-async function api(path, body, method) {
-  const r = await fetch(path, {
-    method: method || (body ? 'POST' : 'GET'),
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || r.statusText);
-  return data;
-}
-
-// ---------- drawing ----------
-function drawHand(ctx, pts, boneColor, dotColor, width) {
-  ctx.lineWidth = width; ctx.lineCap = 'round'; ctx.strokeStyle = boneColor;
-  ctx.beginPath();
-  for (const [a, b] of BONES) { ctx.moveTo(...pts[a]); ctx.lineTo(...pts[b]); }
-  ctx.stroke();
-  ctx.fillStyle = dotColor;
-  for (const [x, y] of pts) { ctx.beginPath(); ctx.arc(x, y, width * 0.9, 0, Math.PI * 2); ctx.fill(); }
-}
-
-function drawCard(canvas, f) {  // f = 63 normalised features
-  const ctx = canvas.getContext('2d'), pad = 16;
-  const pts = Array.from({ length: 21 }, (_, i) => [-f[i * 3], f[i * 3 + 1]]);  // mirrored like the preview
-  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-  const x0 = Math.min(...xs), y0 = Math.min(...ys);
-  const w = Math.max(...xs) - x0 || 1, h = Math.max(...ys) - y0 || 1;
-  const s = Math.min((canvas.width - 2 * pad) / w, (canvas.height - 2 * pad) / h);
-  const ox = (canvas.width - w * s) / 2, oy = (canvas.height - h * s) / 2;
-  drawHand(ctx, pts.map(([x, y]) => [ox + (x - x0) * s, oy + (y - y0) * s]), '#2f5bff', '#14213d', 3);
-}
-
-// ---------- live caption ----------
-function showLive(word, progress = 0, msg) {
-  nowWord.textContent = word || msg || (frame ? '…' : 'Show a sign');
-  nowWord.classList.toggle('idle', !word);
-  holdBar.style.width = `${progress * 100}%`;
-}
-
-function onPrediction(p) {
-  if (!frame) return;
-  if (!p.trained) return showLive(null, 0, 'Teach a few signs, then train the model');
-  if (!p.label || p.confidence < MIN_CONF) { stable = null; return showLive(null); }
-  if (p.label !== stable) { stable = p.label; since = performance.now(); }
-  const held = performance.now() - since;
-  showLive(p.label, Math.min(held / HOLD_MS, 1));
-  if (held >= HOLD_MS && p.label !== committed) {
-    committed = p.label;
-    sentence.push(p.label);
-    renderSentence();
-  }
-}
-
-// ---------- websocket ----------
-function setPill(text, live) { const p = $('#pill'); p.textContent = text; p.classList.toggle('live', live); }
-
-function connect() {
-  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => setPill('connected', true);
-  ws.onclose = () => { inflight = false; setPill('reconnecting', false); setTimeout(connect, 1000); };
-  ws.onmessage = e => { inflight = false; onPrediction(JSON.parse(e.data)); };
-}
-
-// ---------- camera + hand tracking ----------
-function onHands(res) {
-  octx.clearRect(0, 0, overlay.width, overlay.height);
-  const lm = res.multiHandLandmarks && res.multiHandLandmarks[0];
-  if (!lm) { frame = null; stable = committed = null; if (!rec) showLive(null); return; }
-  frame = { landmarks: lm.map(p => [p.x, p.y, p.z]), hand: res.multiHandedness[0].label };
-  drawHand(octx, lm.map(p => [p.x * overlay.width, p.y * overlay.height]), '#ff7a1a', '#ffffff', 3);
-  if (rec) capture();
-  else if (!inflight && ws && ws.readyState === 1) { inflight = true; ws.send(JSON.stringify(frame)); }
-}
-
-async function start() {
-  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 960, height: 540 }, audio: false });
-  video.srcObject = stream;
-  await video.play();
-  overlay.width = video.videoWidth; overlay.height = video.videoHeight;
-  $('#stage').style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
-
-  const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}` });
-  hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
-  hands.onResults(onHands);
-  const loop = async () => { await hands.send({ image: video }); requestAnimationFrame(loop); };
-  loop();
-}
-
-// ---------- sentence + history ----------
-function renderSentence() {
-  $('#sentence').replaceChildren(...sentence.map(w => el('span', 'word', w)));
-}
-
-function speak(text) {
-  if (!text) return;
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = lang.value;
-  speechSynthesis.cancel();
-  speechSynthesis.speak(u);
-}
-
-async function loadHistory() {
-  const rows = await api('/api/history');
-  $('#history').replaceChildren(...rows.map(r => {
-    const li = el('li');
-    li.append(el('b', '', r.source === 'sign' ? 'Signed' : 'Spoken'), document.createTextNode(r.text));
-    return li;
-  }));
-}
-
-$('#speak').onclick = () => {
-  const text = sentence.join(' ');
-  if (!text) return;
-  speak(text);
-  api('/api/history', { source: 'sign', text }).then(loadHistory);
-};
-$('#undo').onclick = () => { sentence.pop(); renderSentence(); };
-$('#clear').onclick = () => { sentence = []; renderSentence(); };
-
-// ---------- teach: record samples ----------
-const recBtn = $('#record'), recStatus = $('#recStatus');
-
-recBtn.onclick = () => {
-  const label = $('#label').value.trim();
-  if (!label) { recStatus.textContent = 'Type the word for this sign first.'; return; }
-  if (rec) return;
-  rec = { label, frames: [], start: performance.now() + 2000 };
-  recBtn.disabled = true;
-  const tick = setInterval(() => {
-    if (!rec) return clearInterval(tick);
-    const left = rec.start - performance.now();
-    recStatus.textContent = left > 0 ? `Get ready… ${Math.ceil(left / 1000)}`
-      : frame ? `Recording ${rec.frames.length} of ${SHOTS}` : 'Show your hand to the camera.';
-  }, 150);
-};
-
-function capture() {
-  const now = performance.now();
-  if (now < rec.start || now - lastShot < 80) return;
-  lastShot = now;
-  rec.frames.push(frame);
-  if (rec.frames.length >= SHOTS) finishRecording();
-}
-
-async function finishRecording() {
-  const { label, frames } = rec;
-  rec = null;
-  recBtn.disabled = false;
-  try {
-    await api('/api/samples', { label, frames });
-    recStatus.textContent = `Saved ${frames.length} samples for “${label}”. Record another round or a new sign.`;
-  } catch (e) { recStatus.textContent = e.message; }
-  refresh();
-}
-
-// ---------- teach: labels + training ----------
+/* ---------- status ---------- */
+let known = new Set(), status = null;
 async function refresh() {
-  const s = await api('/api/status');
-  $('#labels').replaceChildren(...s.labels.map(l => {
-    const chip = el('span', 'chip', l.label);
-    const del = el('button', '', '×');
-    del.title = `Delete “${l.label}”`;
-    del.onclick = async () => { await api(`/api/labels/${encodeURIComponent(l.label)}`, null, 'DELETE'); refresh(); };
-    chip.append(el('em', '', String(l.count)), del);
-    return chip;
-  }));
-  $('#train').disabled = s.labels.length < 2;
-  const m = s.model;
-  $('#modelInfo').textContent = m
-    ? `Active model: ${m.algorithm}, ${Math.round(m.accuracy * 100)}% accuracy on ${m.n_samples} samples.`
-    : `No model trained yet. Record at least 2 signs (${s.min_per_label}+ samples each).`;
-  $('#scores').textContent = m
-    ? 'Compared: ' + Object.entries(m.scores).map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(', ')
-    : '';
+  status = await api("/api/status");
+  known = new Set(status.labels.map((l) => l.label.toLowerCase()));
+  const m = status.model;
+  $("modelState").textContent = m ? `${m.algorithm}, ${(m.accuracy * 100).toFixed(1)}% accuracy` : "No model yet";
+  $("modelState").classList.toggle("ok", !!m);
+  $("labels").innerHTML = "";
+  for (const l of status.labels) {
+    const li = document.createElement("li");
+    li.className = l.count < status.min_per_label ? "low" : "";
+    li.innerHTML = `<span></span><small>${l.count}</small><button aria-label="Delete"></button>`;
+    li.firstChild.textContent = l.label; li.lastChild.textContent = "×";
+    li.lastChild.onclick = async () => { await api("/api/labels/" + encodeURIComponent(l.label), { method: "DELETE" }); refresh(); };
+    $("labels").append(li);
+  }
+  if (!status.labels.length) $("labels").innerHTML = '<li class="note" style="border:0">No signs yet. Record one above, or import a dataset.</li>';
+  if (m) renderScores(m.scores, m.algorithm);
+  loadHistory();
+}
+function renderScores(scores, best) {
+  $("scores").innerHTML = Object.entries(scores).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+    `<div class="score ${k === best ? "best" : ""}"><span>${k.replace("_", " ")}</span><i style="--w:${(v * 100).toFixed(0)}%"></i><span>${(v * 100).toFixed(1)}%</span></div>`).join("");
+}
+async function loadHistory() {
+  const h = await api("/api/history");
+  $("history").innerHTML = "";
+  for (const e of h) { const li = document.createElement("li"); li.innerHTML = "<b></b><span></span>"; li.firstChild.textContent = e.source === "sign" ? "Signed" : "Heard"; li.lastChild.textContent = e.text; $("history").append(li); }
 }
 
-$('#train').onclick = async e => {
-  const btn = e.currentTarget;
-  btn.disabled = true; btn.textContent = 'Training…';
-  let error = '';
-  try { await api('/api/train', {}); } catch (err) { error = err.message; }
-  btn.textContent = 'Train model';
-  await refresh();
-  if (error) $('#modelInfo').textContent = error;
+/* ---------- training ---------- */
+$("trainBtn").onclick = async () => {
+  $("trainBtn").disabled = true; $("trainMsg").textContent = "Training five models, this can take a minute…";
+  try { const r = await post("/api/train", {}); $("trainMsg").textContent = `Best: ${r.algorithm}`; renderScores(r.scores, r.algorithm); await refresh(); }
+  catch (e) { $("trainMsg").textContent = e.message; }
+  $("trainBtn").disabled = false;
 };
 
-// ---------- voice to signs ----------
-async function showSigns(text, save) {
-  const known = new Map((await api('/api/status')).labels.map(l => [l.label.toLowerCase(), l.label]));
-  const cards = text.split(/\s+/).filter(Boolean).map(word => {
-    const key = word.toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, '');
-    const card = el('figure', 'sign');
-    if (known.has(key)) {
-      const c = document.createElement('canvas');
-      c.width = c.height = 120;
-      card.append(c);
-      api(`/api/sign/${encodeURIComponent(known.get(key))}`).then(d => drawCard(c, d.features));
-    } else {
-      card.classList.add('unknown');
-      card.append(el('div', 'blank', '?'));
-    }
-    card.append(el('figcaption', '', word));
-    return card;
+/* ---------- camera + hand tracking ---------- */
+let landmarker, current = null, recording = null, ws, lastSend = 0;
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = (e) => onPrediction(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+async function startCamera() {
+  try {
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 960, height: 720 } });
+    await video.play();
+    const fs = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    landmarker = await HandLandmarker.createFromOptions(fs, {
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" },
+      runningMode: "VIDEO", numHands: 1,
+    });
+    $("camMsg").hidden = true; requestAnimationFrame(loop);
+  } catch (e) { $("camMsg").textContent = "Camera unavailable: allow camera access and reload."; }
+}
+function loop() {
+  if (video.videoWidth) {
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const r = landmarker.detectForVideo(video, performance.now());
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (r.landmarks.length) {
+      const pts = r.landmarks[0];
+      // the image is not mirrored when given to MediaPipe, so its handedness label is flipped
+      const hand = r.handednesses[0][0].categoryName === "Left" ? "Right" : "Left";
+      current = { landmarks: pts.map((p) => [p.x, p.y, p.z]), hand };
+      drawHand(ctx, pts.map((p) => [p.x * canvas.width, p.y * canvas.height]), canvas.width / 160, "#ffcf33", "#fff");
+      const now = performance.now();
+      if (recording && now - recording.t > 66) { recording.t = now; recording.frames.push(current); }
+      if (ws.readyState === 1 && now - lastSend > 70) { lastSend = now; ws.send(JSON.stringify(current)); }
+    } else { current = null; onPrediction({ trained: true, label: null, confidence: 0 }); }
+  }
+  requestAnimationFrame(loop);
+}
+function drawHand(c, p, w, line, dot) {
+  c.lineWidth = w; c.lineCap = "round"; c.strokeStyle = line;
+  c.beginPath(); for (const [a, b] of CONNECT) { c.moveTo(...p[a]); c.lineTo(...p[b]); } c.stroke();
+  c.fillStyle = dot; for (const q of p) { c.beginPath(); c.arc(q[0], q[1], w * .9, 0, 7); c.fill(); }
+}
+
+/* ---------- recognition to sentence ---------- */
+const words = []; let hold = { label: null, since: 0 }, lockedUntil = 0;
+function onPrediction(p) {
+  const strong = p.label && p.confidence >= 0.7;
+  $("liveLabel").textContent = p.trained === false ? "?" : strong ? p.label : "–";
+  $("meterFill").style.width = strong ? Math.round(p.confidence * 100) + "%" : "0";
+  $("liveHint").textContent = p.trained === false ? "Train a model in Signs & training first." : strong ? `${Math.round(p.confidence * 100)}% sure` : "Hold a sign still to add it to your sentence.";
+  const now = performance.now();
+  if (!strong) { hold = { label: null, since: now }; return; }
+  if (hold.label !== p.label) { hold = { label: p.label, since: now }; return; }
+  if (now - hold.since > 1000 && now > lockedUntil) { words.push(p.label); lockedUntil = now + 1500; hold.since = now; renderSentence(); }
+}
+function renderSentence() {
+  const s = $("sentence"); s.innerHTML = "";
+  if (!words.length) s.innerHTML = '<span class="empty">Your sentence will appear here.</span>';
+  for (const w of words) { const e = document.createElement("span"); e.className = "w"; e.textContent = w; s.append(e); }
+}
+$("undoBtn").onclick = () => { words.pop(); renderSentence(); };
+$("clearBtn").onclick = () => { words.length = 0; renderSentence(); };
+$("speakBtn").onclick = async () => {
+  if (!words.length) return;
+  const t = joinWords(words);
+  speechSynthesis.speak(new SpeechSynthesisUtterance(t));
+  await post("/api/history", { source: "sign", text: t }); loadHistory();
+};
+// consecutive single letters read as one spelled word: H I -> "HI"
+function joinWords(ws) { return ws.reduce((o, w, i) => o + (i && !(w.length === 1 && ws[i - 1].length === 1) ? " " : "") + w, ""); }
+
+/* ---------- teaching ---------- */
+$("recForm").onsubmit = async (e) => {
+  e.preventDefault();
+  if (!landmarker) return toast("Camera is not ready yet.");
+  const label = $("recLabel").value.trim(), btn = $("recBtn");
+  btn.disabled = true; btn.textContent = "Recording…";
+  recording = { frames: [], t: 0 };
+  await new Promise((r) => setTimeout(r, 2000));
+  const frames = recording.frames; recording = null;
+  btn.disabled = false; btn.textContent = "Record 2 seconds";
+  if (!frames.length) return toast("No hand seen. Keep your hand in view while recording.");
+  await post("/api/samples", { label, frames }); toast(`Saved ${frames.length} samples for "${label}".`); refresh();
+};
+
+/* ---------- voice to signs ---------- */
+const signCache = new Map();
+async function getSign(label) {
+  const k = label.toLowerCase();
+  if (!signCache.has(k)) { try { signCache.set(k, (await api("/api/sign/" + encodeURIComponent(label))).features); } catch { signCache.set(k, null); } }
+  return signCache.get(k);
+}
+// known word -> its sign; unknown word -> fingerspelled with letter signs when they exist
+async function plan(text) {
+  const out = [];
+  for (const raw of text.toLowerCase().match(/[\p{L}\p{N}']+/gu) || []) {
+    const w = raw.replace(/'/g, "");
+    if (known.has(w)) { out.push({ label: w, f: await getSign(w) }); continue; }
+    const letters = [...w];
+    if (letters.every((c) => known.has(c))) { for (const c of letters) out.push({ label: c, f: await getSign(c), spelled: true }); }
+    else out.push({ label: w, f: null });
+  }
+  return out;
+}
+let playId = 0;
+async function showSigns(text) {
+  const id = ++playId, steps = await plan(text), box = $("tiles"); box.innerHTML = "";
+  if (!steps.length) return;
+  const els = steps.map((s) => {
+    const d = document.createElement("div"); d.className = "tile" + (s.f ? "" : " miss");
+    const cv = document.createElement("canvas"); cv.width = cv.height = 224;
+    const sp = document.createElement("span"); sp.textContent = s.f ? s.label : `${s.label} (no sign yet)`;
+    d.append(cv, sp); box.append(d);
+    if (s.f) paintSign(cv, s.f);
+    return d;
   });
-  $('#signs').replaceChildren(...cards);
-  if (save) api('/api/history', { source: 'speech', text }).then(loadHistory);
+  await post("/api/history", { source: "speech", text });
+  for (let i = 0; i < steps.length && id === playId; i++) {
+    if (!steps[i].f) continue;
+    els.forEach((e, j) => e.classList.toggle("on", j === i));
+    await new Promise((r) => setTimeout(r, steps[i].spelled ? 600 : 900));
+  }
+  els.forEach((e) => e.classList.remove("on")); loadHistory();
 }
+function paintSign(cv, f) {
+  const c = cv.getContext("2d"), pts = [];
+  for (let i = 0; i < 21; i++) pts.push([f[i * 3], f[i * 3 + 1]]);
+  // features are wrist-centred and scaled to [-1,1]; fit them into the tile
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+  const s = (cv.width - 40) / Math.max(maxx - minx, maxy - miny || 1);
+  const mapped = pts.map(([x, y]) => [20 + (x - minx) * s + (cv.width - 40 - (maxx - minx) * s) / 2, 20 + (y - miny) * s + (cv.width - 40 - (maxy - miny) * s) / 2]);
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  drawHand(c, mapped, 7, dark ? "#6f8bff" : "#2346f0", dark ? "#e8eef4" : "#13202c");
+}
+$("typeForm").onsubmit = (e) => { e.preventDefault(); const t = $("typeIn").value.trim(); if (t) { $("heard").textContent = t; showSigns(t); } };
 
-$('#show').onclick = () => showSigns($('#text').value, true);
-$('#text').onkeydown = e => { if (e.key === 'Enter') showSigns(e.target.value, true); };
-
-$('#mic').onclick = () => {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { alert('Speech recognition needs Chrome or Edge.'); return; }
-  const r = new SR();
-  r.lang = lang.value;
-  r.interimResults = true;
-  $('#mic').classList.add('on');
-  r.onresult = e => {
-    const results = Array.from(e.results);
-    const text = results.map(x => x[0].transcript).join(' ');
-    $('#text').value = text;
-    if (results[results.length - 1].isFinal) showSigns(text, true);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;
+$("listenBtn").onclick = () => {
+  if (!SR) return toast("Speech recognition needs Chrome or Edge.");
+  if (rec) { rec.stop(); return; }
+  rec = new SR(); rec.lang = $("lang").value; rec.interimResults = true; rec.continuous = true;
+  rec.onstart = () => { $("listenBtn").textContent = "Stop listening"; $("heard").textContent = "Listening…"; };
+  rec.onresult = (e) => {
+    let interim = "", final = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) (e.results[i].isFinal ? (final += e.results[i][0].transcript) : (interim += e.results[i][0].transcript));
+    $("heard").classList.add("live"); $("heard").textContent = final || interim;
+    if (final.trim()) showSigns(final);
   };
-  r.onend = () => $('#mic').classList.remove('on');
-  r.start();
+  rec.onerror = (e) => toast(e.error === "not-allowed" ? "Microphone access was blocked." : "Speech error: " + e.error);
+  rec.onend = () => { rec = null; $("listenBtn").textContent = "Start listening"; $("heard").classList.remove("live"); };
+  rec.start();
 };
 
-// ---------- go ----------
-refresh();
-loadHistory();
-connect();
-start().catch(err => showLive(null, 0, `Camera unavailable: ${err.message}`));
+connect(); refresh(); startCamera();

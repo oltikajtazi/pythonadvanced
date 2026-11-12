@@ -111,7 +111,7 @@ def main():
         print(f"  {label}: {len(feats)} samples")
     print(f"Imported {total} samples.")
     if not a.no_train and total:
-        print("Training three models, this can take a few minutes...")
+        print("Training five models, this can take a few minutes...")
         try:
             print(model.train())
         except ValueError as e:
