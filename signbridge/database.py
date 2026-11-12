@@ -108,24 +108,6 @@ def save_model(algorithm, accuracy, n_samples, labels, scores, path):
         )
 
 
-def clear_models():
-    """Forget every trained model (used when the set of signs changes). Returns the file paths."""
-    with conn() as c:
-        paths = [r["path"] for r in c.execute("SELECT path FROM models").fetchall()]
-        c.execute("DELETE FROM models")
-    return paths
-
-
-def prune_models(keep=3):
-    """Keep only the newest `keep` model rows. Returns the paths of the removed ones."""
-    with conn() as c:
-        rows = c.execute(
-            "SELECT id, path FROM models ORDER BY id DESC LIMIT -1 OFFSET ?", (keep,)
-        ).fetchall()
-        c.executemany("DELETE FROM models WHERE id = ?", [(r["id"],) for r in rows])
-    return [r["path"] for r in rows]
-
-
 def latest_model():
     with conn() as c:
         r = c.execute("SELECT * FROM models ORDER BY id DESC LIMIT 1").fetchone()

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signbridge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Signbridge</h1>
+    <span id="pill" class="pill">connecting</span>
+    <label class="lang">Language
+      <select id="lang">
+        <option value="en-US">English</option>
+        <option value="de-DE">Deutsch</option>
+        <option value="sq-AL">Shqip</option>
+        <option value="es-ES">Español</option>
+        <option value="fr-FR">Français</option>
+        <option value="tr-TR">Türkçe</option>
+      </select>
+    </label>
+  </header>
+
+  <main>
+    <section class="stage" id="stage">
+      <video id="cam" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="now" aria-live="polite">
+        <div id="nowWord" class="idle">Show a sign</div>
+        <div class="bar"><i id="hold"></i></div>
+      </div>
+    </section>
+
+    <aside>
+      <section class="panel">
+        <h2>Your sentence</h2>
+        <div id="sentence" class="words"></div>
+        <div class="row">
+          <button id="speak" class="primary">Speak</button>
+          <button id="undo">Remove last word</button>
+          <button id="clear">Clear</button>
+        </div>
+        <ul id="history" class="history"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Teach a sign</h2>
+        <div class="row">
+          <input id="label" placeholder="Word for this sign" maxlength="40">
+          <button id="record" class="primary">Record</button>
+        </div>
+        <p id="recStatus" class="hint">Hold the sign and tilt your hand a little while it records. Do 2–3 rounds per sign.</p>
+        <div id="labels" class="chips"></div>
+        <div class="row">
+          <button id="train" disabled>Train model</button>
+        </div>
+        <p id="modelInfo" class="hint">No model trained yet.</p>
+        <p id="scores" class="hint"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Voice to signs</h2>
+        <div class="row">
+          <button id="mic" class="primary">Listen</button>
+          <input id="text" placeholder="or type a sentence">
+          <button id="show">Show signs</button>
+        </div>
+        <div id="signs" class="signs"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

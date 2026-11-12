@@ -6,13 +6,12 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 import database as db
 import model
 
 STATIC = Path(__file__).parent / "static"
-STATIC.mkdir(exist_ok=True)
 
 
 @asynccontextmanager
@@ -29,23 +28,9 @@ class Frame(BaseModel):
     landmarks: list[list[float]] = Field(min_length=21, max_length=21)
     hand: str = "Right"
 
-    @field_validator("hand", mode="before")
-    @classmethod
-    def _hand(cls, v):
-        return "Left" if str(v).strip().lower() == "left" else "Right"
-
 
 class SampleBatch(BaseModel):
     label: str = Field(min_length=1, max_length=40)
-
-    @field_validator("label", mode="after")
-    @classmethod
-    def _label(cls, v):
-        v = v.strip()
-        if not v:
-            raise ValueError("Label can't be blank.")
-        return v
-
     frames: list[Frame] = Field(min_length=1, max_length=500)
 
 
@@ -56,18 +41,12 @@ class Entry(BaseModel):
 
 @app.get("/")
 def index():
-    page = STATIC / "index.html"
-    if not page.exists():
-        raise HTTPException(404, "static/index.html is missing. Add the web interface files to the static/ folder.")
-    return FileResponse(page)
+    return FileResponse(STATIC / "index.html")
 
 
 @app.get("/api/status")
 def status():
-    latest = db.latest_model()
-    if latest:
-        latest.pop("path", None)  # don't leak server file paths
-    return {"labels": db.label_counts(), "model": latest, "min_per_label": model.MIN_PER_LABEL}
+    return {"labels": db.label_counts(), "model": db.latest_model(), "min_per_label": model.MIN_PER_LABEL}
 
 
 @app.post("/api/samples")
@@ -76,19 +55,13 @@ def add_samples(batch: SampleBatch):
         rows = [model.normalize(f.landmarks, f.hand).tolist() for f in batch.frames]
     except ValueError:
         raise HTTPException(422, "Each landmark needs x, y, z.")
-    db.add_samples(batch.label, rows)
+    db.add_samples(batch.label.strip(), rows)
     return {"saved": len(rows)}
 
 
 @app.delete("/api/labels/{label:path}")
 def delete_label(label: str):
-    deleted = db.delete_label(label)
-    reset = False
-    latest = db.latest_model()
-    if deleted and latest and label in latest["labels"]:
-        model.reset()  # the model still knows this sign; force a retrain
-        reset = True
-    return {"deleted": deleted, "model_reset": reset}
+    return {"deleted": db.delete_label(label)}
 
 
 @app.post("/api/train")
@@ -124,11 +97,7 @@ async def live(socket: WebSocket):
     await socket.accept()
     try:
         while True:
-            try:
-                data = await socket.receive_json()
-            except (ValueError, KeyError):  # bad JSON or a non-text message
-                await socket.send_json({"error": "Invalid message."})
-                continue
+            data = await socket.receive_json()
             if not model.is_ready():
                 await socket.send_json({"trained": False})
                 continue

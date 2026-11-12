@@ -58,8 +58,6 @@ def train():
     path = db.DATA_DIR / f"model_{int(time.time())}.joblib"
     joblib.dump(clf, path)
     db.save_model(best, scores[best], len(y), [str(l) for l in labels], scores, str(path))
-    for old in db.prune_models(keep=3):
-        Path(old).unlink(missing_ok=True)
     load()
     return {"algorithm": best, "accuracy": scores[best], "scores": scores}
 
@@ -69,14 +67,6 @@ def load():
     m = db.latest_model()
     _clf = joblib.load(m["path"]) if m and Path(m["path"]).exists() else None
     return _clf is not None
-
-
-def reset():
-    """Drop the trained model (memory, database rows and files). Retrain to get a new one."""
-    global _clf
-    _clf = None
-    for p in db.clear_models():
-        Path(p).unlink(missing_ok=True)
 
 
 def is_ready():
